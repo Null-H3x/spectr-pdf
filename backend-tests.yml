@@ -1,0 +1,112 @@
+name: Backend Tests
+
+on:
+  push:
+    branches: [main]
+    paths:    ['backend/**']
+  pull_request:
+    branches: [main]
+    paths:    ['backend/**']
+
+jobs:
+  test:
+    name: Python Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            tesseract-ocr \
+            libreoffice \
+            libgl1
+
+      - name: Install Python deps
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install httpx pytest
+
+      - name: Validate syntax (all .py files)
+        run: |
+          python -m py_compile main.py launcher.py icon_gen.py
+          for f in routers/*.py utils/*.py; do python -m py_compile "$f"; done
+          echo "All files compile OK"
+
+      - name: Run API integration tests
+        run: |
+          python -c "
+          import sys; sys.path.insert(0,'.')
+          from main import app
+          from fastapi.testclient import TestClient
+          import pymupdf, io, json
+
+          client = TestClient(app)
+
+          def pdf(n=2):
+              doc = pymupdf.open()
+              for i in range(n):
+                  p = doc.new_page(); p.insert_text((72,72),f'CI test page {i+1}')
+              buf = io.BytesIO(); doc.save(buf); buf.seek(0); return buf.read()
+
+          PDF = pdf()
+          pf  = lambda: {'file':('t.pdf',PDF,'application/pdf')}
+          two = lambda: [('file_a',('a.pdf',PDF,'application/pdf')),('file_b',('b.pdf',pdf(),'application/pdf'))]
+
+          results = []
+          def chk(name, r):
+              ok = r.status_code == 200
+              results.append((name, ok, r.status_code))
+              print(f'  {\"pass\" if ok else \"FAIL\"} {name}: {r.status_code}')
+
+          chk('health',          client.get('/health'))
+          chk('metadata',        client.post('/info/metadata', files=pf()))
+          chk('thumbnail',       client.post('/info/thumbnail?page=0', files=pf()))
+          chk('merge',           client.post('/pages/merge', files=[('files',('a.pdf',PDF,'application/pdf')),('files',('b.pdf',PDF,'application/pdf'))]))
+          chk('split',           client.post('/pages/split', files=pf(), data={'ranges':json.dumps([[0,0]])}))
+          chk('rotate',          client.post('/pages/rotate', files=pf(), data={'pages':'[]','degrees':90}))
+          chk('reorder',         client.post('/pages/reorder', files=pf(), data={'order':json.dumps([1,0])}))
+          chk('annotate_list',   client.post('/annotate/list', files=pf()))
+          chk('sticky_note',     client.post('/annotate/sticky_note', files=pf(), data={'page':0,'x':72,'y':72,'content':'CI test'}))
+          chk('list_fields',     client.post('/forms/list_fields', files=pf()))
+          r = client.post('/forms/generate_cert', data={'common_name':'CI Test','org':'GH Actions','country':'US','valid_days':'1'})
+          chk('generate_cert', r)
+          chk('find_text',       client.post('/redact/find_text', files=pf(), data={'query':'test'}))
+          r = client.post('/redact/encrypt', files=pf(), data={'user_password':'ci','allow_printing':'true','allow_copying':'false','allow_editing':'false'})
+          chk('encrypt', r); ENC = r.content
+          chk('decrypt',         client.post('/redact/decrypt', files={'file':('e.pdf',ENC,'application/pdf')}, data={'password':'ci'}))
+          chk('strip_metadata',  client.post('/convert/strip_metadata', files=pf()))
+          chk('pdf_to_images',   client.post('/convert/pdf_to_images?dpi=72', files=pf()))
+          chk('pdf_to_text',     client.post('/convert/pdf_to_text', files=pf()))
+          chk('pdf_to_docx',     client.post('/convert/pdf_to_docx', files=pf()))
+          chk('ocr_check',       client.get('/ocr/check'))
+          chk('ocr_page_info',   client.post('/ocr/page_info', files=pf()))
+          chk('ocr_extract',     client.post('/ocr/extract_text?dpi=150', files=pf()))
+          chk('make_searchable', client.post('/ocr/make_searchable?dpi=150', files=pf()))
+          chk('diff_text',       client.post('/diff/text', files=two()))
+          chk('diff_visual',     client.post('/diff/visual?dpi=72', files=two()))
+          chk('diff_structure',  client.post('/diff/structure', files=two()))
+          chk('diff_summary',    client.post('/diff/summary', files=two()))
+
+          passed = sum(1 for _,ok,_ in results if ok)
+          total  = len(results)
+          print(f'\nResults: {passed}/{total} passed')
+          if passed < total:
+              failed = [n for n,ok,_ in results if not ok]
+              print('Failed:', failed)
+              sys.exit(1)
+          "

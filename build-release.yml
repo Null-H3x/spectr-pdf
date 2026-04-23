@@ -1,0 +1,129 @@
+name: Build & Release Windows
+
+# Triggers:
+#   push to main        → build only (no release)
+#   push tag v*.*.*     → build + create GitHub Release with installer
+
+on:
+  push:
+    branches: [main]
+    tags:     ['v*.*.*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-windows:
+    name: Build Spectr-PDF.exe
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Python ──────────────────────────────────────────────────────────────
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+          cache-dependency-path: backend/requirements.txt
+
+      # ── Install Tesseract (optional feature) ─────────────────────────────────
+      - name: Install Tesseract OCR
+        run: |
+          choco install tesseract --yes --no-progress
+          echo "C:\Program Files\Tesseract-OCR" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        continue-on-error: true   # app works without it
+
+      # ── Install LibreOffice (optional feature) ───────────────────────────────
+      - name: Install LibreOffice
+        run: choco install libreoffice --yes --no-progress
+        continue-on-error: true   # app works without it
+
+      # ── Python deps ──────────────────────────────────────────────────────────
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      # ── Generate assets ───────────────────────────────────────────────────────
+      - name: Generate icons and installer assets
+        run: python icon_gen.py
+
+      # ── PyInstaller ───────────────────────────────────────────────────────────
+      - name: Build with PyInstaller
+        run: pyinstaller spectr_pdf.spec --clean --noconfirm
+
+      # ── Smoke test the .exe ───────────────────────────────────────────────────
+      - name: Smoke test executable
+        run: |
+          Start-Process -FilePath "dist\Spectr-PDF\Spectr-PDF.exe" -ArgumentList "--no-tray","--no-browser","--log-level","warning" -NoNewWindow &
+          Start-Sleep -Seconds 5
+          $response = Invoke-WebRequest -Uri "http://127.0.0.1:8000/health" -UseBasicParsing -TimeoutSec 10
+          Write-Host "Health check: $($response.StatusCode)"
+          if ($response.StatusCode -ne 200) { exit 1 }
+          Stop-Process -Name "Spectr-PDF" -Force -ErrorAction SilentlyContinue
+        shell: pwsh
+
+      # ── Inno Setup installer ──────────────────────────────────────────────────
+      - name: Build installer (Inno Setup)
+        run: |
+          choco install innosetup --yes --no-progress
+          New-Item -ItemType Directory -Force -Path installer | Out-Null
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" SpectrPDF_Installer.iss
+        shell: pwsh
+
+      # ── Grab version from tag ─────────────────────────────────────────────────
+      - name: Extract version
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+            echo "is_release=true" >> $GITHUB_OUTPUT
+          else
+            echo "version=dev-$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+            echo "is_release=false" >> $GITHUB_OUTPUT
+          fi
+
+      # ── Upload build artifact (always) ────────────────────────────────────────
+      - name: Upload portable build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Spectr-PDF-portable-${{ steps.version.outputs.version }}
+          path: backend/dist/Spectr-PDF/
+          retention-days: 14
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Spectr-PDF-installer-${{ steps.version.outputs.version }}
+          path: backend/installer/Spectr-PDF-Setup-*.exe
+          retention-days: 14
+
+      # ── GitHub Release (tags only) ────────────────────────────────────────────
+      - name: Create ZIP for release
+        if: steps.version.outputs.is_release == 'true'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "backend\dist\Spectr-PDF\*" `
+            -DestinationPath "backend\installer\Spectr-PDF-${{ steps.version.outputs.version }}-portable.zip"
+
+      - name: Create GitHub Release
+        if: steps.version.outputs.is_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Spectr PDF ${{ steps.version.outputs.version }}
+          body_path: CHANGELOG.md
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          files: |
+            backend/installer/Spectr-PDF-Setup-*.exe
+            backend/installer/Spectr-PDF-*-portable.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
