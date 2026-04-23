@@ -1,0 +1,123 @@
+name: Build & Release
+
+# push to main → build (no release)
+# push tag v*.*.* → build + GitHub Release with .exe attached
+
+on:
+  push:
+    branches: [main]
+    tags:     ['v*.*.*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-desktop:
+    name: Build Windows Desktop App
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows_app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'    # 3.12 = proven PyInstaller target
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade --no-cache-dir `
+            PyQt6 pymupdf pikepdf pillow `
+            opencv-python-headless pyhanko cryptography `
+            pytesseract python-docx xsdata aiohttp PyKCS11 `
+            pyinstaller
+
+      - name: Generate assets
+        run: python icon_gen.py
+
+      - name: Build with PyInstaller
+        run: python -m PyInstaller spectr_pdf_desktop.spec --clean --noconfirm
+
+      - name: Verify exe exists
+        shell: pwsh
+        run: |
+          $exe = "dist\Spectr-PDF\Spectr-PDF.exe"
+          if (-not (Test-Path $exe)) { throw "Spectr-PDF.exe not found after build" }
+          $mb = [math]::Round((Get-Item $exe).Length / 1MB, 1)
+          Write-Host "Built: $exe ($mb MB)"
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          choco install innosetup --yes --no-progress
+          New-Item -ItemType Directory -Force -Path ..\installer | Out-Null
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            ..\backend\SpectrPDF_Installer.iss `
+            /DDistDir="..\windows_app\dist\Spectr-PDF" `
+            /DOutputDir="..\installer"
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "ver=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+            echo "is_release=true"              >> $GITHUB_OUTPUT
+          else
+            echo "ver=dev-$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+            echo "is_release=false"                       >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create portable ZIP
+        if: steps.version.outputs.is_release == 'true'
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path "dist\Spectr-PDF\*" `
+            -DestinationPath "..\installer\Spectr-PDF-${{ steps.version.outputs.ver }}-portable.zip"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Spectr-PDF-${{ steps.version.outputs.ver }}
+          path: |
+            windows_app/dist/Spectr-PDF/
+          retention-days: 14
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Spectr-PDF-Setup-${{ steps.version.outputs.ver }}
+          path: installer/Spectr-PDF-Setup-*.exe
+          retention-days: 14
+
+      - name: Create GitHub Release
+        if: steps.version.outputs.is_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Spectr PDF ${{ steps.version.outputs.ver }}
+          body: |
+            ## Spectr PDF ${{ steps.version.outputs.ver }}
+
+            Free standalone Windows PDF suite. No cloud. No subscriptions. No browser.
+
+            ### Downloads
+            | File | Description |
+            |------|-------------|
+            | `Spectr-PDF-Setup-*.exe` | Installer → `C:\Program Files\Spectr PDF` |
+            | `Spectr-PDF-*-portable.zip` | Portable — extract and run |
+
+            ### Optional features
+            - **OCR**: install [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki)
+            - **DOCX conversion**: install [LibreOffice](https://www.libreoffice.org/download/)
+            - **CAC signing**: requires DoD middleware (ActivClient / OpenSC)
+          files: |
+            installer/Spectr-PDF-Setup-*.exe
+            installer/Spectr-PDF-*-portable.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

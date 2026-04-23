@@ -1,0 +1,40 @@
+# UTF-8
+#
+# Spectr PDF — Windows Version Info
+# Embedded into Spectr-PDF.exe by PyInstaller.
+# Populates the "Details" tab in Windows Explorer file properties.
+#
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 0, 0, 0),
+    prodvers=(1, 0, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,          # VOS_NT_WINDOWS32
+    fileType=0x1,        # VFT_APP
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        u'040904B0',      # English (US), Unicode
+        [
+          StringStruct(u'CompanyName',      u'Null-H3x'),
+          StringStruct(u'FileDescription',  u'Spectr PDF — Free Local PDF Suite'),
+          StringStruct(u'FileVersion',      u'1.0.0.0'),
+          StringStruct(u'InternalName',     u'Spectr-PDF'),
+          StringStruct(u'LegalCopyright',   u'Copyright (C) 2025 Null-H3x (Benjamin Bartunek)'),
+          StringStruct(u'LegalTrademarks',  u''),
+          StringStruct(u'OriginalFilename', u'Spectr-PDF.exe'),
+          StringStruct(u'ProductName',      u'Spectr PDF'),
+          StringStruct(u'ProductVersion',   u'1.0.0.0'),
+          StringStruct(u'Comments',
+            u'Free PDF suite. View, edit, sign, OCR, convert, and diff PDFs. '
+            u'No cloud. No subscriptions. No BS. — https://github.com/Null-H3x/spectr-pdf'),
+        ]
+      )
+    ]),
+    VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
+  ]
+)
